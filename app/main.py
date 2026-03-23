@@ -2,7 +2,7 @@ import random
 import string
 import json
 from contextlib import asynccontextmanager
-from typing import Literal, Optional
+from typing import Literal, Optional, Union
 import asyncio
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, Request, Depends
 import redis.asyncio as redis
@@ -47,7 +47,7 @@ async def lifespan(_fastapi: FastAPI):
         r = redis.Redis(host=redis_host, port=redis_port, decode_responses=True)
         # Test connection
         await r.ping()
-        await FastAPILimiter.init(r)
+        await FastAPILimiter.init(r, identifier=real_ip_identifier)
     except Exception as e:
         logger.error(f"Failed to connect to Redis: {e}")
         raise
@@ -63,6 +63,24 @@ async def lifespan(_fastapi: FastAPI):
         r = None
 
 app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
+
+
+async def real_ip_identifier(request: Union[Request, WebSocket]) -> str:
+    """
+    Extract the real client IP from headers set by a reverse proxy.
+    """
+    forwarded_for = request.headers.get("X-Forwarded-For")
+    if forwarded_for:
+        return forwarded_for.split(",")[0].strip()
+
+    real_ip = request.headers.get("X-Real-IP")
+    if real_ip:
+        return real_ip
+
+    if request.client and request.client.host:
+        return request.client.host
+
+    return "127.0.0.1"
 
 
 async def safe_ws_close(ws: WebSocket, code: int = 1000, reason: str = ""):

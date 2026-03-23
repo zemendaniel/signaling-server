@@ -1,6 +1,6 @@
 # Signaling Server
 
-A simple **FastAPI WebSocket server** to help peers exchange information in the [zemendaniel/QuicShare](https://github.com/zemendaniel/QuicShare) project.
+A simple **FastAPI WebSocket server** to help peers exchange information in the ZettaSend and [zemendaniel/QuicShare](https://github.com/zemendaniel/QuicShare) project.
 It uses **Redis** for message passing.
 
 ## Features
