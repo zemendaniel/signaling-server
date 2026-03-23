@@ -184,7 +184,7 @@ async def rate_limit_callback(ws: WebSocket, _expire: int, publish_channel: str)
 
 @app.websocket("/ws/rooms")
 async def websocket_endpoint(ws: WebSocket, role: Literal["server", "client"] = Query(), room_id: Optional[str] = None,
-                             _rate_limiter: WebSocketRateLimiter = Depends(WebSocketRateLimiter(times=30, seconds=60))):
+                             _rate_limiter: WebSocketRateLimiter = Depends(WebSocketRateLimiter(times=120, seconds=60))):
     await ws.accept()
     ratelimit = WebSocketRateLimiter(times=15, seconds=60)
     logger.info(f"WebSocket accepted: role={role}, room_id={room_id}")
@@ -258,7 +258,7 @@ async def websocket_endpoint(ws: WebSocket, role: Literal["server", "client"] = 
             logger.error("Failed to delete room", exc_info=True)
 
 
-@app.get("/health", dependencies=[Depends(RateLimiter(times=30, seconds=60))])
+@app.get("/health", dependencies=[Depends(RateLimiter(times=120, seconds=60))])
 async def health():
     try:
         await r.ping()
