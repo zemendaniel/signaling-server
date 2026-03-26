@@ -12,6 +12,7 @@ import os
 import logging
 from fastapi_limiter import FastAPILimiter
 from fastapi_limiter.depends import RateLimiter, WebSocketRateLimiter
+import aiohttp
 
 
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
@@ -21,6 +22,9 @@ logger = logging.getLogger("control-server")
 ROOM_EXPIRE = int(os.getenv("ROOM_EXPIRE", 300))
 MAX_MESSAGE_SIZE = int(os.getenv("MAX_MESSAGE_SIZE", 4 * 1024))
 MAX_ROOM_GENERATION_ATTEMPTS = int(os.getenv("MAX_ROOM_GENERATION_ATTEMPTS", 1000))
+
+RELAY_URL_BASE = os.getenv("RELAY_URL_BASE", "http://localhost:5000")
+RELAY_KEY = os.getenv("RELAY_KEY", "dev")
 
 class ControlMessage:
     def __init__(self, message, code, name):
@@ -151,6 +155,48 @@ async def pubsub_forward(ws: WebSocket, subscribe_channel: str, publish_channel:
                     break
 
                 if data.startswith("!"):
+                    continue
+
+                if data.startswith("@"):
+                    command = data[1:]
+
+                    if command == "request_relay":
+                        target_url = f"{RELAY_URL_BASE}/allocate"
+                        headers = {
+                            "x-relay-api-key": RELAY_KEY,
+                            "Content-Type": "application/json"
+                        }
+
+                        async with aiohttp.ClientSession() as session:
+                            try:
+                                async with session.post(target_url, headers=headers) as response:
+                                    if response.status == 200:
+                                        result = await response.json()
+                                        room_id = subscribe_channel.split(":")[1]
+
+                                        client_data = json.dumps({
+                                            "type": "relay_info",
+                                            "data": json.dumps({
+                                                "portA": result.get("portA", result.get("PortA")),
+                                                "tokenA": result.get("tokenA", result.get("TokenA"))
+                                            })
+                                        })
+                                        server_data = json.dumps({
+                                            "type": "relay_info",
+                                            "data": json.dumps({
+                                                "portB": result.get("portB", result.get("PortB")),
+                                                "tokenB": result.get("tokenB", result.get("TokenB"))
+                                            })
+                                        })
+
+                                        await r.publish(f"room:{room_id}:client", client_data)
+                                        await r.publish(f"room:{room_id}:server", server_data)
+                                    else:
+                                        text = await response.text()
+                                        logger.error(f"Failed to allocate relay. Status: {response.status}, Error: {text}")
+                            except Exception as e:
+                                logger.error(f"Network error while requesting relay: {e}", exc_info=True)
+
                     continue
 
                 await r.publish(publish_channel, data)
