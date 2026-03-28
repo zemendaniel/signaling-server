@@ -23,7 +23,7 @@ ROOM_EXPIRE = int(os.getenv("ROOM_EXPIRE", 300))
 MAX_MESSAGE_SIZE = int(os.getenv("MAX_MESSAGE_SIZE", 4 * 1024))
 MAX_ROOM_GENERATION_ATTEMPTS = int(os.getenv("MAX_ROOM_GENERATION_ATTEMPTS", 1000))
 
-RELAY_URL_BASE = os.getenv("RELAY_URL_BASE", "http://localhost:5000")
+RELAY_URL_BASE = os.getenv("RELAY_URL_BASE", "http://localhost:5050")
 RELAY_KEY = os.getenv("RELAY_KEY", "dev")
 
 class ControlMessage:
