@@ -2,6 +2,8 @@ import random
 import string
 import json
 from contextlib import asynccontextmanager
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
 from typing import Literal, Optional, Union
 import asyncio
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, Request, Depends
@@ -13,18 +15,40 @@ import logging
 from fastapi_limiter import FastAPILimiter
 from fastapi_limiter.depends import RateLimiter, WebSocketRateLimiter
 import aiohttp
+from dotenv import load_dotenv
 
+load_dotenv()
 
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
-logging.basicConfig(level=LOG_LEVEL, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+LOG_FILE = os.getenv("LOG_FILE", "logs/signaling-server.log")
+
+log_path = Path(LOG_FILE)
+log_path.parent.mkdir(parents=True, exist_ok=True)
+
+logging.basicConfig(
+    level=LOG_LEVEL,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    handlers=[
+        RotatingFileHandler(
+            log_path,
+            maxBytes=10 * 1024 * 1024,
+            backupCount=5,
+            encoding="utf-8",
+        ),
+    ],
+)
 logger = logging.getLogger("control-server")
 
 ROOM_EXPIRE = int(os.getenv("ROOM_EXPIRE", 300))
 MAX_MESSAGE_SIZE = int(os.getenv("MAX_MESSAGE_SIZE", 4 * 1024))
 MAX_ROOM_GENERATION_ATTEMPTS = int(os.getenv("MAX_ROOM_GENERATION_ATTEMPTS", 1000))
 
-RELAY_URL_BASE = os.getenv("RELAY_URL_BASE", "http://localhost:5050")
-RELAY_KEY = os.getenv("RELAY_KEY", "dev")
+RELAY_URL_BASE = os.getenv("RELAY_URL_BASE")
+RELAY_PUBLIC_HOST = os.getenv("RELAY_PUBLIC_HOST")
+RELAY_KEY = os.getenv("RELAY_KEY")
+
+def is_relay_configured():
+    return RELAY_URL_BASE is not None and RELAY_PUBLIC_HOST is not None and RELAY_KEY is not None
 
 class ControlMessage:
     def __init__(self, message, code, name):
@@ -70,16 +94,9 @@ app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None
 
 
 async def real_ip_identifier(request: Union[Request, WebSocket]) -> str:
-    """
-    Extract the real client IP from headers set by a reverse proxy.
-    """
     forwarded_for = request.headers.get("X-Forwarded-For")
     if forwarded_for:
-        return forwarded_for.split(",")[0].strip()
-
-    real_ip = request.headers.get("X-Real-IP")
-    if real_ip:
-        return real_ip
+        return forwarded_for.split(",")[-1].strip()
 
     if request.client and request.client.host:
         return request.client.host
@@ -161,6 +178,18 @@ async def pubsub_forward(ws: WebSocket, subscribe_channel: str, publish_channel:
                     command = data[1:]
 
                     if command == "request_relay":
+                        if not is_relay_configured():
+                            room_id = subscribe_channel.split(":")[1]
+                            unavailable_data = json.dumps({
+                                "type": "relay_info",
+                                "data": json.dumps({
+                                    "relay_available": False
+                                })
+                            })
+                            await r.publish(f"room:{room_id}:client", unavailable_data)
+                            await r.publish(f"room:{room_id}:server", unavailable_data)
+                            continue
+
                         target_url = f"{RELAY_URL_BASE}/allocate"
                         headers = {
                             "x-relay-api-key": RELAY_KEY,
@@ -177,15 +206,19 @@ async def pubsub_forward(ws: WebSocket, subscribe_channel: str, publish_channel:
                                         client_data = json.dumps({
                                             "type": "relay_info",
                                             "data": json.dumps({
-                                                "portA": result.get("portA", result.get("PortA")),
-                                                "tokenA": result.get("tokenA", result.get("TokenA"))
+                                                "port": result.get("portA", result.get("PortA")),
+                                                "token": result.get("tokenA", result.get("TokenA")),
+                                                "role": "client",
+                                                "relay_host": RELAY_PUBLIC_HOST,
                                             })
                                         })
                                         server_data = json.dumps({
                                             "type": "relay_info",
                                             "data": json.dumps({
-                                                "portB": result.get("portB", result.get("PortB")),
-                                                "tokenB": result.get("tokenB", result.get("TokenB"))
+                                                "port": result.get("portB", result.get("PortB")),
+                                                "token": result.get("tokenB", result.get("TokenB")),
+                                                "role": "server",
+                                                "relay_host": RELAY_PUBLIC_HOST,
                                             })
                                         })
 
