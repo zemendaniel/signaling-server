@@ -44,7 +44,7 @@ All the variables are optional, however if you want to use the relay fallback, y
 | `MAX_MESSAGE_SIZE`             | `4096`                      | Maximum allowed WebSocket message size in bytes.                 |
 | `MAX_ROOM_GENERATION_ATTEMPTS` | `1000`                      | Max attempts to generate a unique room id.                       |
 | `RELAY_URL_BASE`               | *(unset)*                   | Base URL for optional relay allocation API.                      |
-| `RELAY_PUBLIC_HOST`            | *(unset)*                   | Public relay hostname shared with peers.                         |
+| `RELAY_PUBLIC_HOST`            | *(unset)*                   | Public relay hostname (IP address only) shared with peers.       |
 | `RELAY_KEY`                    | *(unset)*                   | API key sent as `x-relay-api-key` for relay allocation.          |
 
 ## Notes

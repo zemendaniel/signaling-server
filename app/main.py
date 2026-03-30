@@ -6,12 +6,14 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Literal, Optional, Union
 import asyncio
+import time
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, Request, Depends
 import redis.asyncio as redis
 from starlette.responses import JSONResponse
 from starlette.websockets import WebSocketState
 import os
 import logging
+import sys
 from fastapi_limiter import FastAPILimiter
 from fastapi_limiter.depends import RateLimiter, WebSocketRateLimiter
 import aiohttp
@@ -21,14 +23,16 @@ load_dotenv()
 
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 LOG_FILE = os.getenv("LOG_FILE", "logs/signaling-server.log")
+LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
 
 log_path = Path(LOG_FILE)
 log_path.parent.mkdir(parents=True, exist_ok=True)
 
 logging.basicConfig(
     level=LOG_LEVEL,
-    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    format=LOG_FORMAT,
     handlers=[
+        logging.StreamHandler(sys.stdout),
         RotatingFileHandler(
             log_path,
             maxBytes=10 * 1024 * 1024,
@@ -38,6 +42,40 @@ logging.basicConfig(
     ],
 )
 logger = logging.getLogger("control-server")
+logger.propagate = False
+if not logger.handlers:
+    stream_handler = logging.StreamHandler(sys.stdout)
+    stream_handler.setFormatter(logging.Formatter(LOG_FORMAT))
+    app_handler = RotatingFileHandler(
+        log_path,
+        maxBytes=10 * 1024 * 1024,
+        backupCount=5,
+        encoding="utf-8",
+    )
+    app_handler.setFormatter(logging.Formatter(LOG_FORMAT))
+    logger.addHandler(stream_handler)
+    logger.addHandler(app_handler)
+
+
+class Uvicorn5xxFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        status_code = None
+        if isinstance(record.args, tuple) and len(record.args) >= 5:
+            try:
+                status_code = int(str(record.args[4]))
+            except (TypeError, ValueError):
+                status_code = None
+        return status_code is not None and 500 <= status_code < 600
+
+
+def configure_uvicorn_access_logging() -> None:
+    access_logger = logging.getLogger("uvicorn.access")
+
+    if not any(isinstance(log_filter, Uvicorn5xxFilter) for log_filter in access_logger.filters):
+        access_logger.addFilter(Uvicorn5xxFilter())
+
+
+configure_uvicorn_access_logging()
 
 ROOM_EXPIRE = int(os.getenv("ROOM_EXPIRE", 300))
 MAX_MESSAGE_SIZE = int(os.getenv("MAX_MESSAGE_SIZE", 4 * 1024))
@@ -93,6 +131,38 @@ async def lifespan(_fastapi: FastAPI):
 app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
 
 
+@app.middleware("http")
+async def log_only_server_errors(request: Request, call_next):
+    start = time.perf_counter()
+    client_ip = request.client.host if request.client else "unknown"
+
+    try:
+        response = await call_next(request)
+    except Exception:
+        duration_ms = (time.perf_counter() - start) * 1000
+        logger.exception(
+            "HTTP 500 unhandled exception method=%s path=%s client=%s duration_ms=%.2f",
+            request.method,
+            request.url.path,
+            client_ip,
+            duration_ms,
+        )
+        raise
+
+    if response.status_code >= 500:
+        duration_ms = (time.perf_counter() - start) * 1000
+        logger.error(
+            "HTTP %s server error method=%s path=%s client=%s duration_ms=%.2f",
+            response.status_code,
+            request.method,
+            request.url.path,
+            client_ip,
+            duration_ms,
+        )
+
+    return response
+
+
 async def real_ip_identifier(request: Union[Request, WebSocket]) -> str:
     forwarded_for = request.headers.get("X-Forwarded-For")
     if forwarded_for:
@@ -111,6 +181,73 @@ async def safe_ws_close(ws: WebSocket, code: int = 1000, reason: str = ""):
             await ws.close(code=code, reason=reason)
     except Exception:
         pass
+
+
+async def request_and_publish_relay(room_id: str) -> None:
+    """Request relay allocation and publish relay info to both peers."""
+    if r is None:
+        logger.error(f"relay_request_failed reason=redis_unavailable room_id={room_id}")
+        return
+    unavailable_data = json.dumps({
+        "type": "relay_info",
+        "data": json.dumps({
+            "relay_available": False
+        })
+    })
+
+    if not is_relay_configured():
+        logger.warning(f"relay_unavailable reason=relay_not_configured room_id={room_id}")
+        await r.publish(f"room:{room_id}:client", unavailable_data)
+        await r.publish(f"room:{room_id}:server", unavailable_data)
+        return
+
+    target_url = f"{RELAY_URL_BASE}/allocate"
+    headers = {
+        "x-relay-api-key": RELAY_KEY,
+        "Content-Type": "application/json"
+    }
+
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.post(target_url, headers=headers) as response:
+                if response.status == 200:
+                    result = await response.json()
+
+                    client_data = json.dumps({
+                        "type": "relay_info",
+                        "data": json.dumps({
+                            "port": result.get("portA", result.get("PortA")),
+                            "token": result.get("tokenA", result.get("TokenA")),
+                            "role": "client",
+                            "relay_host": RELAY_PUBLIC_HOST,
+                        })
+                    })
+                    server_data = json.dumps({
+                        "type": "relay_info",
+                        "data": json.dumps({
+                            "port": result.get("portB", result.get("PortB")),
+                            "token": result.get("tokenB", result.get("TokenB")),
+                            "role": "server",
+                            "relay_host": RELAY_PUBLIC_HOST,
+                        })
+                    })
+
+                    await r.publish(f"room:{room_id}:client", client_data)
+                    await r.publish(f"room:{room_id}:server", server_data)
+                    logger.info(f"relay_allocated room_id={room_id}")
+                else:
+                    text = await response.text()
+                    await r.publish(f"room:{room_id}:client", unavailable_data)
+                    await r.publish(f"room:{room_id}:server", unavailable_data)
+                    logger.error(
+                        f"relay_request_failed reason=relay_allocate_status room_id={room_id} "
+                        f"status={response.status} error={text}"
+                    )
+        except Exception as e:
+            logger.error(
+                f"relay_request_failed reason=relay_allocate_network room_id={room_id} error={e}",
+                exc_info=True,
+            )
 
 
 async def pubsub_forward(ws: WebSocket, subscribe_channel: str, publish_channel: str, ratelimit: WebSocketRateLimiter):
@@ -178,57 +315,8 @@ async def pubsub_forward(ws: WebSocket, subscribe_channel: str, publish_channel:
                     command = data[1:]
 
                     if command == "request_relay":
-                        if not is_relay_configured():
-                            room_id = subscribe_channel.split(":")[1]
-                            unavailable_data = json.dumps({
-                                "type": "relay_info",
-                                "data": json.dumps({
-                                    "relay_available": False
-                                })
-                            })
-                            await r.publish(f"room:{room_id}:client", unavailable_data)
-                            await r.publish(f"room:{room_id}:server", unavailable_data)
-                            continue
-
-                        target_url = f"{RELAY_URL_BASE}/allocate"
-                        headers = {
-                            "x-relay-api-key": RELAY_KEY,
-                            "Content-Type": "application/json"
-                        }
-
-                        async with aiohttp.ClientSession() as session:
-                            try:
-                                async with session.post(target_url, headers=headers) as response:
-                                    if response.status == 200:
-                                        result = await response.json()
-                                        room_id = subscribe_channel.split(":")[1]
-
-                                        client_data = json.dumps({
-                                            "type": "relay_info",
-                                            "data": json.dumps({
-                                                "port": result.get("portA", result.get("PortA")),
-                                                "token": result.get("tokenA", result.get("TokenA")),
-                                                "role": "client",
-                                                "relay_host": RELAY_PUBLIC_HOST,
-                                            })
-                                        })
-                                        server_data = json.dumps({
-                                            "type": "relay_info",
-                                            "data": json.dumps({
-                                                "port": result.get("portB", result.get("PortB")),
-                                                "token": result.get("tokenB", result.get("TokenB")),
-                                                "role": "server",
-                                                "relay_host": RELAY_PUBLIC_HOST,
-                                            })
-                                        })
-
-                                        await r.publish(f"room:{room_id}:client", client_data)
-                                        await r.publish(f"room:{room_id}:server", server_data)
-                                    else:
-                                        text = await response.text()
-                                        logger.error(f"Failed to allocate relay. Status: {response.status}, Error: {text}")
-                            except Exception as e:
-                                logger.error(f"Network error while requesting relay: {e}", exc_info=True)
+                        command_room_id = subscribe_channel.split(":")[1]
+                        await request_and_publish_relay(command_room_id)
 
                     continue
 
@@ -284,18 +372,21 @@ async def websocket_endpoint(ws: WebSocket, role: Literal["server", "client"] = 
                              _rate_limiter: WebSocketRateLimiter = Depends(WebSocketRateLimiter(times=120, seconds=60))):
     await ws.accept()
     ratelimit = WebSocketRateLimiter(times=15, seconds=60)
-    logger.info(f"WebSocket accepted: role={role}, room_id={room_id}")
+    logger.info(f"ws_event=connect role={role} room_id={room_id}")
 
     if r is None:
         logger.error("Redis unavailable in websocket_endpoint")
+        logger.warning(f"ws_event=reject reason=redis_unavailable role={role} room_id={room_id}")
         await safe_ws_close(ws, code=1011)
         return
 
     if room_id is None and role == "client":
+        logger.warning(f"ws_event=reject reason=missing_room_id role={role} room_id={room_id}")
         await safe_ws_close(ws, code=1008, reason="Clients must provide room id.")
         return
 
     if room_id is not None and role == "server":
+        logger.warning(f"ws_event=reject reason=server_sent_room_id role={role} room_id={room_id}")
         await safe_ws_close(ws, code=1008, reason="Servers cannot provide room id.")
         return
 
@@ -310,8 +401,10 @@ async def websocket_endpoint(ws: WebSocket, role: Literal["server", "client"] = 
                         "type": "room_info",
                         "data": json.dumps({"id": room_id, "ex": ROOM_EXPIRE})
                     }))
+                    logger.info(f"ws_event=room_created role={role} room_id={room_id}")
                     break
             except Exception:
+                logger.error("Failed to create room for server connection", exc_info=True)
                 await safe_ws_close(ws, code=1011)
                 return
         else:
@@ -328,12 +421,16 @@ async def websocket_endpoint(ws: WebSocket, role: Literal["server", "client"] = 
             server_exists, client_claimed = await pipe.execute()
 
             if not server_exists:
+                logger.warning(f"ws_event=reject reason=room_not_found role={role} room_id={room_id}")
                 await safe_ws_close(ws, code=1008, reason="This room does not exist.")
                 return
 
             if not client_claimed:
+                logger.warning(f"ws_event=reject reason=room_in_use role={role} room_id={room_id}")
                 await safe_ws_close(ws, code=1008, reason="This room is already in use.")
                 return
+
+            logger.info(f"ws_event=room_joined role={role} room_id={room_id}")
 
         except Exception:
             await safe_ws_close(ws, code=1011)
@@ -347,12 +444,15 @@ async def websocket_endpoint(ws: WebSocket, role: Literal["server", "client"] = 
 
     try:
         await pubsub_forward(ws, subscribe_channel, publish_channel, ratelimit)
-    # Cleanup
+    except Exception:
+        logger.error(f"ws_event=error reason=pubsub_forward_failed role={role} room_id={room_id}", exc_info=True)
+        raise
     finally:
         try:
             await r.delete(f"room:{room_id}:{role}")
         except Exception:
             logger.error("Failed to delete room", exc_info=True)
+        logger.info(f"ws_event=disconnect role={role} room_id={room_id}")
 
 
 @app.get("/health", dependencies=[Depends(RateLimiter(times=120, seconds=60))])
