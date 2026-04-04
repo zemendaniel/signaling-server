@@ -216,10 +216,12 @@ async def request_and_publish_relay(room_id: str) -> None:
                     client_data = json.dumps({
                         "type": "relay_info",
                         "data": json.dumps({
-                            "port": result.get("portA", result.get("PortA")),
-                            "token": result.get("tokenA", result.get("TokenA")),
+                            "port": result.get("portA"),
+                            "token": result.get("tokenA"),
                             "role": "client",
                             "relay_host": RELAY_PUBLIC_HOST,
+                            "relay_url_base": RELAY_URL_BASE,
+                            "session_id": result.get("session_id")
                         })
                     })
                     server_data = json.dumps({
@@ -229,6 +231,8 @@ async def request_and_publish_relay(room_id: str) -> None:
                             "token": result.get("tokenB", result.get("TokenB")),
                             "role": "server",
                             "relay_host": RELAY_PUBLIC_HOST,
+                            "relay_url_base": RELAY_URL_BASE,
+                            "session_id": result.get("session_id")
                         })
                     })
 
