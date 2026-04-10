@@ -82,12 +82,12 @@ MAX_MESSAGE_SIZE = int(os.getenv("MAX_MESSAGE_SIZE", 4 * 1024))
 MAX_ROOM_GENERATION_ATTEMPTS = int(os.getenv("MAX_ROOM_GENERATION_ATTEMPTS", 1000))
 
 RELAY_INTERNAL_URL_BASE = os.getenv("RELAY_INTERNAL_URL_BASE")
-RELAY_PUBLIC_IPV4 = os.getenv("RELAY_PUBLIC_IPV4")
+RELAY_PUBLIC_IP = os.getenv("RELAY_PUBLIC_IP")
 RELAY_EXTERNAL_URL_BASE = os.getenv("RELAY_EXTERNAL_URL_BASE")
 RELAY_KEY = os.getenv("RELAY_KEY")
 
 def is_relay_configured():
-    return RELAY_INTERNAL_URL_BASE is not None and RELAY_PUBLIC_IPV4 is not None \
+    return RELAY_INTERNAL_URL_BASE is not None and RELAY_PUBLIC_IP is not None \
     and RELAY_KEY is not None and RELAY_EXTERNAL_URL_BASE is not None
 
 class ControlMessage:
@@ -221,9 +221,9 @@ async def request_and_publish_relay(room_id: str) -> None:
                             "port": result.get("portA"),
                             "token": result.get("tokenA"),
                             "role": "client",
-                            "relay_host": RELAY_PUBLIC_IPV4,
+                            "relay_host": RELAY_PUBLIC_IP,
                             "relay_url_base": RELAY_EXTERNAL_URL_BASE,
-                            "session_id": result.get("session_id")
+                            "session_id": result.get("sessionId")
                         })
                     })
                     server_data = json.dumps({
@@ -232,9 +232,9 @@ async def request_and_publish_relay(room_id: str) -> None:
                             "port": result.get("portB", result.get("PortB")),
                             "token": result.get("tokenB", result.get("TokenB")),
                             "role": "server",
-                            "relay_host": RELAY_PUBLIC_IPV4,
+                            "relay_host": RELAY_PUBLIC_IP,
                             "relay_url_base": RELAY_EXTERNAL_URL_BASE,
-                            "session_id": result.get("session_id")
+                            "session_id": result.get("sessionId")
                         })
                     })
 
