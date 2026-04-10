@@ -81,12 +81,14 @@ ROOM_EXPIRE = int(os.getenv("ROOM_EXPIRE", 300))
 MAX_MESSAGE_SIZE = int(os.getenv("MAX_MESSAGE_SIZE", 4 * 1024))
 MAX_ROOM_GENERATION_ATTEMPTS = int(os.getenv("MAX_ROOM_GENERATION_ATTEMPTS", 1000))
 
-RELAY_URL_BASE = os.getenv("RELAY_URL_BASE")
-RELAY_PUBLIC_HOST = os.getenv("RELAY_PUBLIC_HOST")
+RELAY_INTERNAL_URL_BASE = os.getenv("RELAY_INTERNAL_URL_BASE")
+RELAY_PUBLIC_IPV4 = os.getenv("RELAY_PUBLIC_IPV4")
+RELAY_EXTERNAL_URL_BASE = os.getenv("RELAY_EXTERNAL_URL_BASE")
 RELAY_KEY = os.getenv("RELAY_KEY")
 
 def is_relay_configured():
-    return RELAY_URL_BASE is not None and RELAY_PUBLIC_HOST is not None and RELAY_KEY is not None
+    return RELAY_INTERNAL_URL_BASE is not None and RELAY_PUBLIC_IPV4 is not None \
+    and RELAY_KEY is not None and RELAY_EXTERNAL_URL_BASE is not None
 
 class ControlMessage:
     def __init__(self, message, code, name):
@@ -201,7 +203,7 @@ async def request_and_publish_relay(room_id: str) -> None:
         await r.publish(f"room:{room_id}:server", unavailable_data)
         return
 
-    target_url = f"{RELAY_URL_BASE}/allocate"
+    target_url = f"{RELAY_INTERNAL_URL_BASE}/allocate"
     headers = {
         "x-relay-api-key": RELAY_KEY,
         "Content-Type": "application/json"
@@ -219,8 +221,8 @@ async def request_and_publish_relay(room_id: str) -> None:
                             "port": result.get("portA"),
                             "token": result.get("tokenA"),
                             "role": "client",
-                            "relay_host": RELAY_PUBLIC_HOST,
-                            "relay_url_base": RELAY_URL_BASE,
+                            "relay_host": RELAY_PUBLIC_IPV4,
+                            "relay_url_base": RELAY_EXTERNAL_URL_BASE,
                             "session_id": result.get("session_id")
                         })
                     })
@@ -230,8 +232,8 @@ async def request_and_publish_relay(room_id: str) -> None:
                             "port": result.get("portB", result.get("PortB")),
                             "token": result.get("tokenB", result.get("TokenB")),
                             "role": "server",
-                            "relay_host": RELAY_PUBLIC_HOST,
-                            "relay_url_base": RELAY_URL_BASE,
+                            "relay_host": RELAY_PUBLIC_IPV4,
+                            "relay_url_base": RELAY_EXTERNAL_URL_BASE,
                             "session_id": result.get("session_id")
                         })
                     })
